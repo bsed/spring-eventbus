@@ -7,10 +7,12 @@ import java.util.Map;
 import ognl.Ognl;
 import ognl.OgnlException;
 
-import org.aspectj.lang.JoinPoint;
-import org.aspectj.lang.annotation.AfterReturning;
-import org.aspectj.lang.annotation.Aspect;
+import org.springframework.aop.AfterReturningAdvice;
+import org.springframework.aop.framework.Advised;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.aop.support.AopUtils;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
+import org.springframework.aop.support.annotation.AnnotationMatchingPointcut;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.ApplicationContext;
@@ -23,14 +25,13 @@ import com.eventbus.annotation.Publish;
 import com.eventbus.annotation.Subscribe;
 
 @SuppressWarnings("unchecked")
-@Aspect
-public class SpringEventBus extends EventBus implements BeanPostProcessor, ApplicationContextAware
+public class SpringEventBus extends EventBus implements BeanPostProcessor, ApplicationContextAware,
+		AfterReturningAdvice
 {
-	private static final String PUB_ANNOATION_EXP = "@annotation(com.eventbus.annotation.Publish)&&@annotation(pub)";
 	private ApplicationContext context;
 
-	//	private DefaultPointcutAdvisor advisor = new DefaultPointcutAdvisor(new AnnotationMatchingPointcut(
-	//			EventBusService.class, Publish.class), this);
+	private DefaultPointcutAdvisor advisor = new DefaultPointcutAdvisor(new AnnotationMatchingPointcut(
+			EventBusService.class, Publish.class), this);
 
 	@Override
 	public void init()
@@ -60,6 +61,7 @@ public class SpringEventBus extends EventBus implements BeanPostProcessor, Appli
 				logger.error("[eventbus] prototype bean is not supported!");
 				return obj;
 			}
+			boolean hasPub = false;
 			Method[] methods = c.getMethods();
 			for (Method m : methods)
 			{
@@ -75,14 +77,27 @@ public class SpringEventBus extends EventBus implements BeanPostProcessor, Appli
 
 					addSubscribe(target);
 				}
+				if (!hasPub && m.isAnnotationPresent(Publish.class))
+					hasPub = true;
+			}
+			if (hasPub)
+			{
+				logger.info("[eventbus] add pulisher class=" + c.getName());
+				if (obj instanceof Advised)
+				{
+					Advised advised = (Advised) obj;
+					advised.addAdvisor(advisor);
+				}
+				else
+				{
+					ProxyFactory weaver = new ProxyFactory(obj);
+					weaver.setProxyTargetClass(true);
+					weaver.addAdvisor(advisor);
+					Object proxyObj = weaver.getProxy();
+					return proxyObj;
+				}
 			}
 		}
-		//			ProxyFactory weaver = new ProxyFactory(obj);
-		//			//			weaver.setTargetClass(obj.getClass());
-		//			weaver.setProxyTargetClass(true);
-		//			weaver.addAdvisor(advisor);
-		//			Object proxyObj = weaver.getProxy();
-		//			return proxyObj;
 		return obj;
 	}
 
@@ -92,16 +107,17 @@ public class SpringEventBus extends EventBus implements BeanPostProcessor, Appli
 		context = applicationcontext;
 	}
 
-	@AfterReturning(pointcut = PUB_ANNOATION_EXP, returning = "retVal")
-	public void afterReturning(JoinPoint joinPoint, Object retVal, Publish pub)
+	@Override
+	public void afterReturning(Object arg0, Method method, Object[] args, Object retVal) throws Throwable
 	{
+		Publish pub = method.getAnnotation(Publish.class);
 		Object customerEvent = null;
 		try
 		{
 			if (pub.arg() != null && pub.arg().trim().length() > 0)
 			{
 				Map map = new HashMap();
-				map.put("args", joinPoint.getArgs());
+				map.put("args", args);
 				map.put("retVal", retVal);
 				if (!isPublishArgValid(pub.arg()))
 				{
@@ -116,10 +132,10 @@ public class SpringEventBus extends EventBus implements BeanPostProcessor, Appli
 			logger.error("invalid arg expression! " + pub.arg(), e);
 			return;
 		}
-		joinPoint.getArgs();
 		if (pub.subject() == null || pub.subject().trim().length() == 0)
 			publish(customerEvent);
 		else
 			publish(pub.subject(), customerEvent);
+
 	}
 }
